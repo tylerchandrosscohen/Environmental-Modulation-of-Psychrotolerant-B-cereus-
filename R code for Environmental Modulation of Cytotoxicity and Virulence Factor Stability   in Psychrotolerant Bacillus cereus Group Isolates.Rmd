@@ -1,0 +1,1087 @@
+---
+title: R code for Environmental Modulation of Cytotoxicity and Virulence Factor Stability
+  in Psychrotolerant Bacillus cereus Group Isolates
+output: html_document
+date: "2026-03-05"
+---
+
+```{r SET WORKING DIRECTORY (Change as needed)}
+setwd("~/OneDrive - The Pennsylvania State University/Tyler's projects - Psychrotolerant Bc Project/Manuscript Files/Data and R codes used in manuscript")
+```
+
+```{r Histogram with distrubition for cytotoxity at 32 and 37°C FIGURE 2}
+library(ggplot2)
+library(dplyr)
+
+# ---------------------------------------------------
+# 1. Load your dataset (CSV)
+# ---------------------------------------------------
+dat <- read.csv("Figure_2.csv", stringsAsFactors = FALSE)
+names(dat) <- trimws(names(dat))
+
+# ---------------------------------------------------
+# 2. Prepare data
+# ---------------------------------------------------
+dat <- dat %>%
+  mutate(
+    Cytotoxicity_R1 = as.numeric(Cytotoxicity_R1),
+    Cytotoxicity_R2 = as.numeric(Cytotoxicity_R2),
+
+    Average_Cytotoxicity = rowMeans(
+      dplyr::select(., Cytotoxicity_R1, Cytotoxicity_R2),
+      na.rm = TRUE
+    ),
+
+    panC_group = dplyr::recode(panC_group, "II" = "II", "VI" = "VI"),
+
+    # Make Temperature consistent (handles "32", "32°C", 32, etc.)
+    Temperature = gsub("\\s+", "", as.character(Temperature)),
+    Temperature = ifelse(Temperature %in% c("32", "32C", "32°C"), "32°C",
+                  ifelse(Temperature %in% c("37", "37C", "37°C"), "37°C", Temperature)),
+    Temperature = factor(Temperature, levels = c("32°C", "37°C"))
+  )
+
+dat <- dat %>% filter(Temperature %in% c("32°C", "37°C"))
+
+# ---------------------------------------------------
+# 3. Updated colors
+# ---------------------------------------------------
+temp_colors <- c(
+  "32°C" = "#3D5A6C",
+  "37°C" = "#9B2915"
+)
+
+# ---------------------------------------------------
+# 4. Clean theme (default R font)
+# ---------------------------------------------------
+cyto_theme <- theme_bw() +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    axis.line = element_line(color = "black"),
+    axis.text = element_text(size = 14),
+    axis.title = element_text(size = 14)
+  )
+
+# ---------------------------------------------------
+# 5. Function: histogram + density by Temperature
+# ---------------------------------------------------
+make_cyto_plot <- function(data) {
+  ggplot(data, aes(x = Average_Cytotoxicity,
+                   fill = Temperature,
+                   color = Temperature)) +
+    geom_histogram(
+      aes(y = after_stat(density)),
+      binwidth = 0.05,
+      alpha = 0.35,
+      position = "identity",
+      linewidth = 0.2
+    ) +
+    geom_density(alpha = 0.5, linewidth = 1) +
+    scale_fill_manual(values = temp_colors) +
+    scale_color_manual(values = temp_colors) +
+    scale_x_continuous(
+      limits = c(-0.5, 1.2),
+      breaks = seq(-0.5, 1.2, 0.2)
+    ) +
+    labs(
+      x = "Average Cytotoxicity",
+      y = "Density"
+    ) +
+    cyto_theme
+}
+
+# ---------------------------------------------------
+# 6. Split and plot
+# ---------------------------------------------------
+dat_II <- dat %>% filter(panC_group == "II")
+dat_VI <- dat %>% filter(panC_group == "VI")
+
+cyto_II <- make_cyto_plot(dat_II)
+print(cyto_II)
+
+ggsave("Cyto_Histogram_panC_II.png",
+       plot = cyto_II,
+       device = "png",
+       height = 6, width = 10, units = "in")
+
+cyto_VI <- make_cyto_plot(dat_VI)
+print(cyto_VI)
+
+ggsave("Cyto_Histogram_panC_VI.png",
+       plot = cyto_VI,
+       device = "png",
+       height = 6, width = 10, units = "in")
+```
+
+```{r LMM and Plot the cytotoxicity Data For growth media and Temp FIGURE 3 }
+# =========================
+# Load libraries
+# =========================
+library(dplyr)
+library(ggplot2)
+library(lme4)
+library(lmerTest)
+library(emmeans)
+library(tidyr)
+
+## ------------------------------------------------------------
+## 1. Load data (10 & 32 °C cytotoxicity) 
+## ------------------------------------------------------------
+df <- read.csv("Figure_3.csv", stringsAsFactors = FALSE)
+names(df) <- trimws(names(df))  # helps if CSV has trailing spaces in headers
+
+df <- df %>%
+  mutate(
+    Isolate         = factor(Isolate),
+    panC_group      = factor(panC_group),
+    Media           = factor(Media),
+    Temperature     = factor(Temperature, levels = c(10, 32)),
+    Cytotoxicity_R1 = as.numeric(Cytotoxicity_R1),
+    Cytotoxicity_R2 = as.numeric(Cytotoxicity_R2)
+  )
+
+## ------------------------------------------------------------
+## 2. Biological means per isolate (mean of technical reps)
+## ------------------------------------------------------------
+iso_data <- df %>%
+  mutate(
+    Cytotoxicity_mean = rowMeans(
+      dplyr::across(c(Cytotoxicity_R1, Cytotoxicity_R2)),
+      na.rm = TRUE
+    )
+  )
+
+## ------------------------------------------------------------
+## 3. LMM on 10 & 32 (BHI vs SMB, both clades)
+## ------------------------------------------------------------
+med_dd <- iso_data %>%
+  filter(
+    Temperature %in% c(10, 32),
+    Media %in% c("BHI", "SMB")
+  ) %>%
+  mutate(
+    Temperature = factor(Temperature, levels = c(10, 32)),
+    Media       = factor(Media,       levels = c("BHI", "SMB"))
+  )
+
+cyto_lmm <- lmer(
+  Cytotoxicity_mean ~ Media * Temperature * panC_group + (1 | Isolate),
+  data = med_dd
+)
+
+cat("\n=== LMM (10 vs 32 °C, BHI vs SMB): Cytotoxicity_mean ~ Media * Temperature * panC_group + (1|Isolate) ===\n")
+print(summary(cyto_lmm))
+
+## ------------------------------------------------------------
+## 4a. Temperature contrasts within Media × panC (10 vs 32)
+## ------------------------------------------------------------
+emm_temp <- emmeans(cyto_lmm, ~ Temperature | Media * panC_group)
+tuk_temp <- pairs(emm_temp, adjust = "tukey")
+cat("\n=== Tukey: Temperature (10 vs 32) within Media × panC_group ===\n")
+print(tuk_temp)
+
+p_to_stars <- function(p) {
+  ifelse(p < 0.0001, "****",
+  ifelse(p < 0.001,  "***",
+  ifelse(p < 0.01,   "**",
+  ifelse(p < 0.05,   "*", "ns"))))
+}
+
+temp_sig_tbl <- as.data.frame(tuk_temp) %>%
+  tidyr::separate(contrast, into = c("Temp1", "Temp2"), sep = " - ") %>%
+  mutate(
+    Temp1      = gsub("Temperature", "", Temp1),
+    Temp2      = gsub("Temperature", "", Temp2),
+    stars      = p_to_stars(p.value),
+    Media      = as.character(Media),
+    panC_group = as.character(panC_group)
+  )
+
+## ------------------------------------------------------------
+## 4b. Medium contrasts within Temperature × panC (BHI vs SMB)
+## ------------------------------------------------------------
+emm_med <- emmeans(cyto_lmm, ~ Media | Temperature * panC_group)
+tuk_med <- pairs(emm_med, adjust = "tukey")
+cat("\n=== Tukey: Media (BHI vs SMB) within Temperature × panC_group ===\n")
+print(tuk_med)
+
+med_sig_tbl <- as.data.frame(tuk_med) %>%
+  mutate(
+    Temperature = as.character(Temperature),
+    panC_group  = as.character(panC_group),
+    stars       = p_to_stars(p.value)
+  )
+
+## ------------------------------------------------------------
+## 5. Plotting function (like RT-qPCR figure but for cytotoxicity)
+## ------------------------------------------------------------
+make_clade_cyto_plot <- function(clade_label, iso_data, temp_sig, med_sig) {
+
+  dat <- iso_data %>%
+    filter(panC_group == clade_label) %>%
+    mutate(
+      Temp_factor = factor(Temperature, levels = c(10, 32))
+    )
+
+  # Mean ± SD per Media × Temp
+  sum_bar <- dat %>%
+    group_by(Media, Temp_factor) %>%
+    summarise(
+      mean_cyto = mean(Cytotoxicity_mean, na.rm = TRUE),
+      sd_cyto   = sd(Cytotoxicity_mean,   na.rm = TRUE),
+      .groups   = "drop"
+    ) %>%
+    mutate(sd_cyto = ifelse(is.na(sd_cyto), 0, sd_cyto))
+
+  media_cols <- c("BHI" = "#7D6652", "SMB" = "#769776")
+
+  pd  <- position_dodge(width = 1.0)
+  pjd <- position_jitterdodge(jitter.width = 0.12, dodge.width = 1.0)
+
+  p <- ggplot(sum_bar,
+              aes(x = Temp_factor,
+                  y = mean_cyto,
+                  fill = Media)) +
+    geom_col(position = pd, width = 0.55, color = "black") +
+    geom_errorbar(aes(ymin = mean_cyto - sd_cyto,
+                      ymax = mean_cyto + sd_cyto),
+                  position = pd, width = 0.25, linewidth = 0.3) +
+    geom_hline(yintercept = 0, linewidth = 0.4) +
+    geom_point(
+      data = dat,
+      aes(x = Temp_factor, y = Cytotoxicity_mean, fill = Media),
+      position = pjd, size = 2, shape = 21, color = "black"
+    ) +
+    scale_fill_manual(values = media_cols) +
+    scale_y_continuous(limits = c(-0.1, 1.5), breaks = seq(-0.1, 1.5, 0.2)) +
+    labs(
+      x = "Temperature (°C)",
+      y = "Average Normalized Cytotoxicity"
+    ) +
+    theme_classic(base_size = 15) +
+    theme(
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      plot.title = element_blank(),
+      legend.position = "none"
+    )
+
+  #### 1) TEMP EFFECT STARS (10 vs 32) WITHIN EACH MEDIUM
+  if (!is.null(temp_sig) && nrow(temp_sig) > 0) {
+
+    temp_cl <- temp_sig %>%
+      filter(panC_group == clade_label)
+
+    # BHI: 10 vs 32
+    temp_BHI <- temp_cl %>%
+      filter(Media == "BHI") %>%
+      mutate(
+        x1   = match(Temp1, levels(dat$Temp_factor)),
+        x2   = match(Temp2, levels(dat$Temp_factor)),
+        xmid = (x1 + x2) / 2,
+        y    = max(sum_bar$mean_cyto + sum_bar$sd_cyto, na.rm = TRUE) + 0.15
+      ) %>%
+      filter(!is.na(x1), !is.na(x2))
+
+    # SMB: 10 vs 32
+    temp_SMB <- temp_cl %>%
+      filter(Media == "SMB") %>%
+      mutate(
+        x1   = match(Temp1, levels(dat$Temp_factor)),
+        x2   = match(Temp2, levels(dat$Temp_factor)),
+        xmid = (x1 + x2) / 2,
+        y    = max(sum_bar$mean_cyto + sum_bar$sd_cyto, na.rm = TRUE) + 0.55
+      ) %>%
+      filter(!is.na(x1), !is.na(x2))
+
+    if (nrow(temp_BHI) > 0) {
+      p <- p +
+        geom_segment(
+          data = temp_BHI,
+          aes(x = x1 - 0.28, xend = x2 - 0.28,
+              y = y, yend = y),
+          inherit.aes = FALSE,
+          linewidth = 0.6,
+          color = "#7D6652"
+        ) +
+        geom_text(
+          data = temp_BHI,
+          aes(x = xmid - 0.28, y = y + 0.03, label = stars),
+          inherit.aes = FALSE,
+          vjust = 0,
+          size  = 4,
+          color = "#7D6652"
+        )
+    }
+
+    if (nrow(temp_SMB) > 0) {
+      p <- p +
+        geom_segment(
+          data = temp_SMB,
+          aes(x = x1 + 0.28, xend = x2 + 0.28,
+              y = y, yend = y),
+          inherit.aes = FALSE,
+          linewidth = 0.6,
+          color = "#769776"
+        ) +
+        geom_text(
+          data = temp_SMB,
+          aes(x = xmid + 0.28, y = y + 0.03, label = stars),
+          inherit.aes = FALSE,
+          vjust = 0,
+          size  = 4,
+          color = "#769776"
+        )
+    }
+  }
+
+  #### 2) MEDIUM EFFECT STARS (BHI vs SMB at 10 & 32)
+  if (!is.null(med_sig) && nrow(med_sig) > 0) {
+
+    med_cl <- med_sig %>%
+      filter(panC_group == clade_label) %>%
+      mutate(
+        x    = match(Temperature, levels(dat$Temp_factor)),
+        x1   = x - 0.23,
+        x2   = x + 0.23,
+        xmid = x,
+        y    = max(sum_bar$mean_cyto + sum_bar$sd_cyto, na.rm = TRUE) + 1.0 +
+          0.3 * (row_number() - 1)
+      ) %>%
+      filter(!is.na(x))
+
+    if (nrow(med_cl) > 0) {
+      p <- p +
+        geom_segment(
+          data = med_cl,
+          aes(x = x1, xend = x2,
+              y = y, yend = y),
+          inherit.aes = FALSE,
+          linewidth = 0.6,
+          color = "#000000"
+        ) +
+        geom_text(
+          data = med_cl,
+          aes(x = xmid, y = y + 0.03, label = stars),
+          inherit.aes = FALSE,
+          vjust = 0,
+          size  = 4,
+          color = "#000000"
+        )
+    }
+  }
+
+  p
+}
+
+## ------------------------------------------------------------
+## 6. Generate plots for each panC group
+## ------------------------------------------------------------
+clades <- levels(iso_data$panC_group)
+plot_list <- list()
+
+for (cl in clades) {
+  nm <- paste0("group_", cl)
+  plot_list[[nm]] <- make_clade_cyto_plot(
+    clade_label = cl,
+    iso_data    = iso_data,
+    temp_sig    = temp_sig_tbl,
+    med_sig     = med_sig_tbl
+  )
+}
+
+## ------------------------------------------------------------
+## 7. Save plots
+## ------------------------------------------------------------
+dir.create("Cytotox_plots", showWarnings = FALSE)
+
+for (cl in clades) {
+  nm <- paste0("group_", cl)
+  ggsave(
+    filename = file.path("Cytotox_plots", paste0("cytotox_", nm, ".png")),
+    plot     = plot_list[[nm]],
+    width    = 5,
+    height   = 5,
+    dpi      = 600
+  )
+}
+```
+
+```{r LMM and Plot the Log2FC Data For growth media and Temp FIGURE 4 }
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(lme4)
+library(lmerTest)
+library(emmeans)
+
+## ------------------------------------------------------------
+## 0. SETTINGS
+## ------------------------------------------------------------
+FILE_IN   <- "Figure_4.csv"
+OUT_DIR   <- "RtqPCR_plots"
+
+GENES_USE  <- c("hblC", "nheA", "plc", "sph")
+GROUPS_USE <- c("II", "VI")
+MEDIA_USE  <- c("BHI", "SMB")
+
+TEMPS_PLOT <- c(10, 32, 37)   # plotted
+TEMPS_LMM  <- c(10, 32)       # modeled
+
+Y_LIM_LOW  <- -10
+Y_LIM_HIGH <-  10
+
+## p → stars helper
+p_to_stars <- function(p) {
+  ifelse(is.na(p), "",
+         ifelse(p < 0.0001, "****",
+                ifelse(p < 0.001,  "***",
+                       ifelse(p < 0.01,   "**",
+                              ifelse(p < 0.05,   "*", "ns")))))
+}
+
+## ------------------------------------------------------------
+## 1. Load data (log2FC already, vs 37 °C)
+## ------------------------------------------------------------
+df <- read.csv(FILE_IN, stringsAsFactors = FALSE) %>%
+  mutate(
+    Isolate     = factor(Isolate),
+    panC_group  = factor(panC_group),
+    Media       = factor(Media),
+    Temperature = as.numeric(Temperature)    # 10, 32, 37
+  )
+
+## ------------------------------------------------------------
+## 2. Wide → long
+## ------------------------------------------------------------
+df_long <- df %>%
+  pivot_longer(
+    cols      = all_of(GENES_USE),
+    names_to  = "Gene",
+    values_to = "log2FC"
+  ) %>%
+  mutate(
+    Gene   = factor(Gene, levels = GENES_USE),
+    log2FC = as.numeric(log2FC)
+  )
+
+## ------------------------------------------------------------
+## 3. Biological means per isolate (collapse technical reps)
+## ------------------------------------------------------------
+iso_bio <- df_long %>%
+  group_by(Isolate, panC_group, Media, Temperature, Gene) %>%
+  summarise(
+    log2FC = mean(log2FC, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+## ------------------------------------------------------------
+## 4. LMM on 10 & 32 only (BHI vs SMB)
+## ------------------------------------------------------------
+med_dd <- iso_bio %>%
+  filter(
+    Temperature %in% TEMPS_LMM,
+    Media %in% MEDIA_USE,
+    panC_group %in% GROUPS_USE,
+    Gene %in% GENES_USE
+  ) %>%
+  mutate(
+    Temperature = factor(Temperature, levels = TEMPS_LMM),
+    Media       = factor(Media,       levels = MEDIA_USE),
+    panC_group  = factor(panC_group,  levels = GROUPS_USE),
+    Gene        = factor(Gene,        levels = GENES_USE)
+  )
+
+med_lmm <- lmer(
+  log2FC ~ Media * Temperature * panC_group * Gene + (1 | Isolate),
+  data = med_dd
+)
+
+cat("\n=== LMM (10 vs 32 °C, BHI vs SMB): log2FC ~ Media * Temperature * panC_group * Gene + (1|Isolate) ===\n")
+print(summary(med_lmm))
+
+## ------------------------------------------------------------
+## 4a. Temperature contrasts (10 vs 32) within panC × Media × Gene
+## ------------------------------------------------------------
+emm_temp <- emmeans(med_lmm, ~ Temperature | panC_group * Media * Gene)
+tuk_temp <- pairs(emm_temp, adjust = "tukey")
+
+cat("\n=== Tukey: Temperature (10 vs 32) within panC × Media × Gene ===\n")
+print(tuk_temp)
+
+temp_sig_tbl <- as.data.frame(tuk_temp) %>%
+  tidyr::separate(contrast, into = c("Temp1", "Temp2"), sep = " - ") %>%
+  mutate(
+    Temp1      = gsub("Temperature", "", Temp1),
+    Temp2      = gsub("Temperature", "", Temp2),
+    panC_group = as.character(panC_group),
+    Media      = as.character(Media),
+    Gene       = as.character(Gene),
+    stars      = p_to_stars(p.value)
+  ) %>%
+  select(panC_group, Media, Gene, Temp1, Temp2, estimate, SE, df, t.ratio, p.value, stars) %>%
+  distinct(panC_group, Media, Gene, Temp1, Temp2, .keep_all = TRUE)
+
+## ------------------------------------------------------------
+## 4b. Media contrasts (BHI vs SMB) within panC × Temperature × Gene
+## ------------------------------------------------------------
+emm_med <- emmeans(med_lmm, ~ Media | panC_group * Temperature * Gene)
+tuk_med <- pairs(emm_med, adjust = "tukey")
+
+cat("\n=== Tukey: Media (BHI vs SMB) within panC × Temperature × Gene ===\n")
+print(tuk_med)
+
+med_sig_tbl <- as.data.frame(tuk_med) %>%
+  tidyr::separate(contrast, into = c("Med1", "Med2"), sep = " - ") %>%
+  mutate(
+    Med1        = gsub("Media", "", Med1),
+    Med2        = gsub("Media", "", Med2),
+    panC_group  = as.character(panC_group),
+    Temperature = as.character(Temperature),
+    Gene        = as.character(Gene),
+    stars       = p_to_stars(p.value)
+  ) %>%
+  select(panC_group, Temperature, Gene, Med1, Med2, estimate, SE, df, t.ratio, p.value, stars) %>%
+  distinct(panC_group, Temperature, Gene, Med1, Med2, .keep_all = TRUE)
+
+## ------------------------------------------------------------
+## 5. Plotting function
+## ------------------------------------------------------------
+make_group_gene_plot <- function(clade_label, gene_label,
+                                 iso_data, temp_sig, med_sig) {
+
+  ## data for plotting
+  dat <- iso_data %>%
+    filter(
+      panC_group == clade_label,
+      Gene       == gene_label,
+      Media %in% MEDIA_USE,
+      Temperature %in% TEMPS_PLOT
+    ) %>%
+    mutate(
+      Temp_factor = factor(Temperature, levels = TEMPS_PLOT),
+      Media = factor(Media, levels = MEDIA_USE)
+    )
+
+  ## Mean ± SD per Media × Temp
+  sum_bar <- dat %>%
+    group_by(Media, Temp_factor) %>%
+    summarise(
+      mean_log2FC = mean(log2FC, na.rm = TRUE),
+      sd_log2FC   = sd(log2FC,   na.rm = TRUE),
+      .groups     = "drop"
+    ) %>%
+    mutate(sd_log2FC = ifelse(is.na(sd_log2FC), 0, sd_log2FC))
+
+  ## Colors
+  media_cols <- c("BHI" = "#7D6652", "SMB" = "#769776")
+
+  ## Positioning
+  pd  <- position_dodge(width = 1.0)
+  pjd <- position_jitterdodge(jitter.width = 0.12, dodge.width = 1.0)
+
+  ## Fixed y-axis limits
+  y_lim_low  <- Y_LIM_LOW
+  y_lim_high <- Y_LIM_HIGH
+
+  ## Base plot
+  p <- ggplot(sum_bar,
+              aes(x = Temp_factor,
+                  y = mean_log2FC,
+                  fill = Media)) +
+    geom_col(position = pd, width = 0.55, color = "black") +
+    geom_errorbar(aes(ymin = mean_log2FC - sd_log2FC,
+                      ymax = mean_log2FC + sd_log2FC),
+                  position = pd, width = 0.25, linewidth = 0.45) +
+    geom_hline(yintercept = 0, linewidth = 0.4) +
+    geom_point(
+      data = dat,
+      aes(x = Temp_factor, y = log2FC, fill = Media),
+      position = pjd, size = 2.4, shape = 21, color = "black"
+    ) +
+    scale_fill_manual(values = media_cols) +
+    scale_y_continuous(
+      limits = c(y_lim_low, y_lim_high),
+      breaks = seq(y_lim_low, y_lim_high, by = 2),
+      expand = expansion(mult = c(0, 0.05))
+    ) +
+    coord_cartesian(clip = "off") +
+    labs(
+      x = "Temperature (°C)",
+      y = expression(log[2] * "FC")
+    ) +
+    theme_classic(base_size = 18) +
+    theme(
+      # keep/remove this line depending on whether you want Times:
+      # text = element_text(family = "Times New Roman"),
+      axis.title.x = element_text(size = 22),
+      axis.title.y = element_text(size = 22),
+      axis.text.x  = element_text(size = 18),
+      axis.text.y  = element_text(size = 18),
+      plot.title   = element_blank(),
+      legend.position = "none",
+      plot.margin = margin(10, 18, 10, 10)
+    )
+
+  #### --------------------------------------------------------------
+  #### 1) TEMP EFFECT STARS (10 vs 32) WITHIN EACH MEDIUM
+  #### --------------------------------------------------------------
+  if (!is.null(temp_sig) && nrow(temp_sig) > 0) {
+
+    temp_this <- temp_sig %>%
+      filter(
+        panC_group == clade_label,
+        Gene == gene_label
+      )
+
+    y_temp_BHI <- y_lim_high - 0.6
+    y_temp_SMB <- y_lim_high - 1.8
+
+    # BHI
+    temp_BHI <- temp_this %>%
+      filter(Media == "BHI") %>%
+      mutate(
+        x1   = match(Temp1, levels(dat$Temp_factor)),
+        x2   = match(Temp2, levels(dat$Temp_factor)),
+        xmid = (x1 + x2) / 2,
+        y    = y_temp_BHI
+      ) %>%
+      filter(!is.na(x1), !is.na(x2))
+
+    # SMB
+    temp_SMB <- temp_this %>%
+      filter(Media == "SMB") %>%
+      mutate(
+        x1   = match(Temp1, levels(dat$Temp_factor)),
+        x2   = match(Temp2, levels(dat$Temp_factor)),
+        xmid = (x1 + x2) / 2,
+        y    = y_temp_SMB
+      ) %>%
+      filter(!is.na(x1), !is.na(x2))
+
+    if (nrow(temp_BHI) > 0) {
+      p <- p +
+        geom_segment(
+          data = temp_BHI,
+          aes(x = x1 - 0.28, xend = x2 - 0.28, y = y, yend = y),
+          inherit.aes = FALSE,
+          linewidth = 0.75,
+          color = "#7D6652"
+        ) +
+        geom_text(
+          data = temp_BHI,
+          aes(x = xmid - 0.28, y = y + 0.15, label = stars),
+          inherit.aes = FALSE,
+          vjust = 0,
+          size  = 5.3,
+          color = "#7D6652"
+        )
+    }
+
+    if (nrow(temp_SMB) > 0) {
+      p <- p +
+        geom_segment(
+          data = temp_SMB,
+          aes(x = x1 + 0.28, xend = x2 + 0.28, y = y, yend = y),
+          inherit.aes = FALSE,
+          linewidth = 0.75,
+          color = "#769776"
+        ) +
+        geom_text(
+          data = temp_SMB,
+          aes(x = xmid + 0.28, y = y + 0.15, label = stars),
+          inherit.aes = FALSE,
+          vjust = 0,
+          size  = 5.3,
+          color = "#769776"
+        )
+    }
+  }
+
+  #### --------------------------------------------------------------
+  #### 2) MEDIUM EFFECT STARS (BHI vs SMB at 10 & 32)
+  #### --------------------------------------------------------------
+  if (!is.null(med_sig) && nrow(med_sig) > 0) {
+
+    med_this <- med_sig %>%
+      filter(
+        panC_group == clade_label,
+        Gene == gene_label,
+        Temperature %in% c("10", "32")
+      ) %>%
+      mutate(
+        Temperature = factor(Temperature, levels = c("10", "32"))
+      ) %>%
+      arrange(Temperature)
+
+    y_med_10 <- y_lim_high - 2.8
+    y_med_32 <- y_lim_high - 3.6
+
+    med_gene <- med_this %>%
+      mutate(
+        x    = match(as.character(Temperature), levels(dat$Temp_factor)),
+        x1   = x - 0.23,
+        x2   = x + 0.23,
+        xmid = x,
+        y    = ifelse(as.character(Temperature) == "10", y_med_10, y_med_32)
+      ) %>%
+      filter(!is.na(x))
+
+    if (nrow(med_gene) > 0) {
+      p <- p +
+        geom_segment(
+          data = med_gene,
+          aes(x = x1, xend = x2, y = y, yend = y),
+          inherit.aes = FALSE,
+          linewidth = 0.75,
+          color = "black"
+        ) +
+        geom_text(
+          data = med_gene,
+          aes(x = xmid, y = y + 0.15, label = stars),
+          inherit.aes = FALSE,
+          vjust = 0,
+          size  = 5.3,
+          color = "black"
+        )
+    }
+  }
+
+  p
+}
+
+## ------------------------------------------------------------
+## 6. Generate all groups × gene plots
+## ------------------------------------------------------------
+plot_list <- list()
+
+for (cl in GROUPS_USE) {
+  for (g in GENES_USE) {
+    nm <- paste0("Group", cl, "_", g)
+    plot_list[[nm]] <- make_group_gene_plot(
+      clade_label = cl,
+      gene_label  = g,
+      iso_data    = iso_bio,
+      temp_sig    = temp_sig_tbl,
+      med_sig     = med_sig_tbl
+    )
+  }
+}
+
+## ------------------------------------------------------------
+## 7. Save plots
+## ------------------------------------------------------------
+dir.create(OUT_DIR, showWarnings = FALSE, recursive = TRUE)
+
+for (nm in names(plot_list)) {
+  ggsave(
+    filename = file.path(OUT_DIR, paste0(nm, ".png")),
+    plot     = plot_list[[nm]],
+    width    = 5,
+    height   = 5,
+    dpi      = 600
+  )
+}
+
+cat("\nSaved plots to: ", OUT_DIR, "\n", sep = "")
+```
+
+```{r Plot the Treated Supernatant data and run ANOVA and Tukey Test FIGURE 5}
+# =========================
+# Load libraries
+# =========================
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(agricolae)
+library(scales)
+
+# =========================
+# File path 
+# =========================
+file_path <- "Figure_5.csv"
+
+# =========================
+# Treatment Colors
+# =========================
+treatment_colors <- c(
+  "Control" = "#32746D",
+  "Trypsin" = "#32746D",
+  "Trypsin_Mucin" = "#32746D",
+  "65_1" = "#32746D",
+  "65_2" = "#32746D",
+  "75_1" = "#32746D",
+  "75_2" = "#32746D",
+  "100_1" = "#32746D",
+  "100_2" = "#32746D",
+  "pH_2" = "#32746D",
+  "pH_5" = "#32746D"
+)
+
+# =========================
+# Label mappings
+# =========================
+new_labels <- c(
+  "Control" = "Untreated",
+  "Trypsin" = "Trypsin",
+  "Trypsin_Mucin" = "Trypsin + Mucin",
+  "65_1" = "65°C 1 minute",
+  "65_2" = "65°C 2 minutes",
+  "75_1" = "75°C 1 minute",
+  "75_2" = "75°C 2 minutes",
+  "100_1" = "100°C 1 minute",
+  "100_2" = "100°C 2 minutes",
+  "pH_2" = "pH 2",
+  "pH_5" = "pH 5"
+)
+
+# =========================
+# Plotting + Analysis Function
+# =========================
+process_experiment <- function(experiment_name, file_path) {
+  
+  # ---- Load CSV
+  data <- read.csv(file_path, stringsAsFactors = FALSE)
+  names(data) <- trimws(names(data))  # trims "Experiment " style issues
+  
+  # ---- Basic checks
+  stopifnot(all(c("Experiment", "Treatment", "ISOLATE") %in% names(data)))
+  
+  # ---- Filter to one experiment
+  data_exp <- data %>% 
+    filter(Experiment == experiment_name)
+  
+  # ---- Identify replicate columns robustly
+  rep_cols <- grep("^R\\d+(_Cytotoxicity)?$", names(data_exp), value = TRUE)
+  if (length(rep_cols) == 0) {
+    stop("No replicate columns found (expected R1_Cytotoxicity / R2_Cytotoxicity or R1/R2).")
+  }
+  
+  # ---- Reshape to long format
+  data_long <- data_exp %>%
+    pivot_longer(
+      cols = all_of(rep_cols),
+      names_to = "Replicate",
+      values_to = "Cytotoxicity"
+    ) %>%
+    filter(!is.na(Cytotoxicity)) %>%
+    mutate(
+      ISOLATE = factor(ISOLATE),
+      Treatment = factor(
+        Treatment,
+        levels = c("Control", setdiff(unique(as.character(Treatment)), "Control"))
+      )
+    )
+  
+  # ---- ANOVA on all replicate values
+  anova_result <- aov(Cytotoxicity ~ Treatment, data = data_long)
+  
+  print(paste("ANOVA for Experiment:", experiment_name))
+  print(summary(anova_result))
+  
+  # ---- Tukey HSD (Treatment only)
+  tukey_hsd <- TukeyHSD(anova_result, which = "Treatment")
+  tukey_df <- as.data.frame(tukey_hsd$Treatment)
+  tukey_df$Comparison <- rownames(tukey_df)
+  
+  control_vs <- tukey_df %>%
+    dplyr::filter(grepl("Control", Comparison)) %>%
+    dplyr::select(Comparison, diff, lwr, upr, p_adj = `p adj`)
+  
+  print("Tukey HSD: Control vs each treatment")
+  print(control_vs)
+  
+  # ---- Agricolae Group Letters (based on full replicate-level stats)
+  tukey_result_agricolae <- HSD.test(anova_result, "Treatment", group = TRUE)
+  tukey_letters <- tukey_result_agricolae$groups
+  
+  # ---- Average biological reps within each isolate for plotting only
+  isolate_means <- data_long %>%
+    group_by(ISOLATE, Treatment) %>%
+    summarize(
+      Cytotoxicity = mean(Cytotoxicity, na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  # ---- Summary Data for bars/error bars based on isolate averages
+  summary_data <- isolate_means %>%
+    group_by(Treatment) %>%
+    summarize(
+      avg_cytotoxicity = mean(Cytotoxicity, na.rm = TRUE),
+      sd_cytotoxicity  = sd(Cytotoxicity, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      tukey_letters = tukey_letters$groups[
+        match(as.character(Treatment), rownames(tukey_letters))
+      ]
+    )
+  
+  # ---- Keep only colors/labels that exist in this experiment
+  cols_use   <- treatment_colors[names(treatment_colors) %in% as.character(summary_data$Treatment)]
+  labels_use <- new_labels[names(new_labels) %in% as.character(summary_data$Treatment)]
+  
+  # ---- Plot
+  p <- ggplot(summary_data,
+              aes(x = Treatment, y = avg_cytotoxicity, fill = Treatment)) +
+    geom_bar(stat = "identity", width = 0.6, color = "black") +
+    geom_errorbar(
+      aes(
+        ymin = avg_cytotoxicity - sd_cytotoxicity,
+        ymax = avg_cytotoxicity + sd_cytotoxicity
+      ),
+      width = 0.2
+    ) +
+    geom_text(
+      aes(
+        label = tukey_letters,
+        y = avg_cytotoxicity + sd_cytotoxicity + 0.13
+      ),
+      size = 7,
+      color = "black"
+    ) +
+    geom_hline(yintercept = 0, color = "black", linewidth = 0.5) +
+    scale_fill_manual(values = cols_use) +
+    scale_x_discrete(labels = labels_use) +
+    geom_jitter(
+      data = isolate_means,
+      aes(x = Treatment, y = Cytotoxicity),
+      width = 0.2,
+      size = 2,
+      alpha = 0.8,
+      color = "black",
+      inherit.aes = FALSE
+    ) +
+    theme_classic() +
+    labs(x = "Treatment", y = "Average Cytotoxicity (Mean ± SD)") +
+    scale_y_continuous(
+      limits = c(-0.25, 1.0),
+      breaks = seq(-0.2, 1.0, by = 0.2),
+      expand = c(0, 0)
+    ) +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1, size = 20, color = "black"),
+      axis.text.y = element_text(size = 15, color = "black"),
+      axis.title.x = element_blank(),
+      axis.title.y = element_blank(),
+      legend.position = "none",
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank()
+    )
+  
+  return(list(
+    plot = p,
+    control_pvalues = control_vs,
+    isolate_means = isolate_means,
+    summary_data = summary_data
+  ))
+}
+
+# =========================
+# Loop across experiments (CSV)
+# =========================
+dat0 <- read.csv(file_path, stringsAsFactors = FALSE)
+names(dat0) <- trimws(names(dat0))
+experiments <- unique(dat0$Experiment)
+
+for (exp_name in experiments) {
+  result <- process_experiment(exp_name, file_path)
+  
+  safe_exp <- gsub("[^A-Za-z0-9_\\-]+", "_", as.character(exp_name))
+  
+  # ---- Save Plot
+  ggsave(
+    filename = paste0(safe_exp, "_Treated_plot.png"),
+    plot = result$plot,
+    width = 7,
+    height = 7,
+    dpi = 600
+  )
+  
+  # ---- Save Control vs Tukey
+  write.csv(
+    result$control_pvalues,
+    paste0(safe_exp, "_Control_vs_Tukey_pvalues.csv"),
+    row.names = FALSE
+  )
+  
+  # ---- Optional: save isolate-level means used for plotting
+  write.csv(
+    result$isolate_means,
+    paste0(safe_exp, "_Isolate_means_for_plotting.csv"),
+    row.names = FALSE
+  )
+}
+```
+
+```{r Plot the Change of growth of isolates at 6°C FIGURE S1}
+library(ggplot2)
+library(dplyr)
+
+# Load the data from CSV
+Change_OD <- read.csv("Figure_S1.csv")
+
+# Reorder isolates so they group by panC group
+Change_OD$Isolate <- factor(
+  Change_OD$Isolate,
+  levels = c(
+    Change_OD$Isolate[Change_OD$panC_group == "II"],
+    Change_OD$Isolate[Change_OD$panC_group == "VI"]
+  )
+)
+
+# Filter only groups II and VI
+filtered_data <- Change_OD %>%
+  filter(panC_group %in% c("II", "VI"))
+
+# Plot
+changegrowth <- ggplot(filtered_data,
+                       aes(x = Isolate,
+                           y = Change_in_Growth,
+                           fill = panC_group)) +
+  geom_bar(stat = "identity",
+           position = position_dodge(),
+           width = 0.5,
+           color = "black") +
+  geom_hline(yintercept = 0.5, color = "red", linetype = "dashed", linewidth = 0.5) +
+  geom_hline(yintercept = 1, color = "red", linetype = "dashed", linewidth = 0.5) +
+  theme_minimal() +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.line = element_line(),
+    axis.text.x = element_text(size = 12, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 14),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 20),
+    strip.text = element_text(size = 16)
+  ) +
+  labs(
+    x = "Isolate",
+    y = "Difference in Growth (OD600)"
+  ) +
+  scale_fill_manual(values = c(
+    "II" = "#548687",
+    "VI" = "#E55934"
+  )) +
+  facet_grid(~panC_group, scales = "free_x", space = "free_x") +
+  scale_y_continuous(expand = c(0,0), limits = c(0,1.6))
+
+print(changegrowth)
+
+# ANOVA
+anova_result <- aov(Change_in_Growth ~ panC_group, data = filtered_data)
+summary(anova_result)
+
+# Save plot
+ggsave(
+  filename = "Figure_S1.pdf",
+  plot = changegrowth,
+  height = 6,
+  width = 16,
+  units = "in",
+  dpi = 600
+)
+```
